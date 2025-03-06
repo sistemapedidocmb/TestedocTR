@@ -16,17 +16,38 @@ from PIL import Image
 # Configuração do ambiente para usar PyTorch
 os.environ["USE_TORCH"] = "1"
 
-# Carregamento de bibliotecas com tratamento de erros
+# Título e descrição
+st.title("Extrator de Texto de PDFs")
+st.markdown("Esta aplicação extrai texto de PDFs usando docTR.")
+
+# Tentativa de carregar bibliotecas necessárias
 try:
-    import fitz  # PyMuPDF
+    from pdf2image import convert_from_bytes
     from doctr.models import ocr_predictor
 except Exception as e:
     st.error(f"Erro ao carregar bibliotecas: {e}")
-    st.info("Certifique-se de instalar PyMuPDF: `pip install pymupdf`")
+    st.info("Certifique-se de instalar pdf2image: `pip install pdf2image`")
     st.stop()
 
-st.title("Extrator de Texto de Imagens em PDFs")
-st.markdown("Esta aplicação extrai texto de imagens contidas em arquivos PDF usando docTR.")
+# Verificar se o poppler está instalado
+try:
+    from pdf2image.exceptions import PDFInfoNotInstalledError
+    # Tentativa básica de verificar o poppler
+    with tempfile.NamedTemporaryFile(suffix='.pdf') as f:
+        f.write(b"%PDF-1.7\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 3 3]>>endobj xref 0 4\n0000000000 65535 f\n0000000010 00000 n\n0000000053 00000 n\n0000000102 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n149\n%%EOF\n")
+        f.flush()
+        try:
+            convert_from_bytes(open(f.name, 'rb').read(), first_page=1, last_page=1)
+        except PDFInfoNotInstalledError:
+            st.error("Poppler não está instalado. Adicione 'poppler-utils' ao seu arquivo packages.txt")
+            st.stop()
+        except Exception as e:
+            if "DPI" in str(e):  # Erro relacionado a DPI é aceitável para o teste
+                pass
+            else:
+                st.warning(f"Aviso na verificação do poppler: {e}")
+except Exception as e:
+    st.warning(f"Não foi possível verificar o poppler: {e}")
 
 # Função para carregar o modelo
 @st.cache_resource
@@ -37,73 +58,29 @@ def load_model():
         st.error(f"Erro ao carregar o modelo: {e}")
         return None
 
-# Função para extrair imagens de um PDF
-def extract_images_from_pdf(pdf_file):
-    images = []
-    # Salvar o PDF em um arquivo temporário
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        tmp_file.write(pdf_file.getvalue())
-        pdf_path = tmp_file.name
-    
+# Função para converter PDF em imagens
+def convert_pdf_to_images(pdf_file):
     try:
-        # Abrir o PDF usando PyMuPDF
-        doc = fitz.open(pdf_path)
-        
-        # Para cada página do PDF
-        for page_index, page in enumerate(doc):
-            # Obter as imagens da página
-            image_list = page.get_images(full=True)
-            
-            # Se não houver imagens na página
-            if not image_list:
-                st.info(f"Nenhuma imagem encontrada na página {page_index+1}")
-                continue
-                
-            for img_index, img in enumerate(image_list):
-                # Obter o número da imagem
-                xref = img[0]
-                # Extrair a imagem
-                base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                
-                # Converter para formato PIL
-                try:
-                    image = Image.open(io.BytesIO(image_bytes))
-                    # Converter para RGB se necessário
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
-                    images.append({
-                        "page": page_index + 1,
-                        "index": img_index + 1,
-                        "image": image
-                    })
-                except Exception as e:
-                    st.warning(f"Erro ao processar imagem {img_index+1} da página {page_index+1}: {e}")
-        
-        # Fechar o documento
-        doc.close()
+        return convert_from_bytes(pdf_file.getvalue(), dpi=200)
     except Exception as e:
-        st.error(f"Erro ao extrair imagens do PDF: {e}")
-    finally:
-        # Remover o arquivo temporário
-        os.unlink(pdf_path)
-    
-    return images
+        st.error(f"Erro ao converter PDF para imagens: {e}")
+        st.error("Detalhes: ", str(e))
+        return []
 
 # Upload de arquivo
 st.header("Upload de PDF")
 uploaded_file = st.file_uploader("Escolha um arquivo PDF", type=["pdf"])
 
 if uploaded_file is not None:
-    # Extrair imagens do PDF
-    with st.spinner("Extraindo imagens do PDF..."):
-        images = extract_images_from_pdf(uploaded_file)
+    # Converter PDF para imagens
+    with st.spinner("Convertendo PDF para imagens..."):
+        images = convert_pdf_to_images(uploaded_file)
         
         if not images:
-            st.warning("Não foram encontradas imagens no PDF.")
+            st.warning("Não foi possível converter o PDF para imagens.")
             st.stop()
         else:
-            st.success(f"Foram encontradas {len(images)} imagens no PDF.")
+            st.success(f"PDF convertido em {len(images)} imagens.")
     
     # Carregar o modelo
     with st.spinner("Carregando modelo OCR..."):
@@ -112,20 +89,20 @@ if uploaded_file is not None:
             st.error("Não foi possível carregar o modelo OCR.")
             st.stop()
     
-    # Processar cada imagem
-    for img_data in images:
-        st.markdown(f"## Imagem {img_data['index']} (Página {img_data['page']})")
+    # Processar cada página do PDF
+    for page_num, img in enumerate(images):
+        st.markdown(f"## Página {page_num + 1}")
         
         # Exibir a imagem e processar OCR
         cols = st.columns(2)
         with cols[0]:
-            st.image(img_data["image"], caption=f"Imagem {img_data['index']} da página {img_data['page']}", use_column_width=True)
+            st.image(img, caption=f"Página {page_num + 1}", use_column_width=True)
         
         # Processar OCR
-        with st.spinner(f"Processando OCR na imagem {img_data['index']}..."):
+        with st.spinner(f"Processando OCR na página {page_num + 1}..."):
             try:
                 # Converter para numpy array
-                img_np = np.array(img_data["image"])
+                img_np = np.array(img)
                 
                 # Executar OCR
                 result = model([img_np])
@@ -153,7 +130,7 @@ if uploaded_file is not None:
                     st.warning(f"Não foi possível gerar a visualização: {e}")
             
             except Exception as e:
-                st.error(f"Erro ao processar OCR na imagem: {e}")
+                st.error(f"Erro ao processar OCR na página: {e}")
         
-        # Separador entre imagens
+        # Separador entre páginas
         st.markdown("---")
