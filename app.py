@@ -1,151 +1,159 @@
-import os
 import streamlit as st
-import numpy as np
-from PIL import Image
-from doctr.io import DocumentFile
-from doctr.models import ocr_predictor
-import logging
-from pdf2image import convert_from_bytes
-import io
-import traceback
 
-# Verificação inicial de dependências
-try:
-    from weasyprint import HTML
-    import cairocffi
-except ImportError as e:
-    st.error(f"Erro de dependência: {str(e)}")
-    st.stop()
-except OSError as e:
-    st.error(f"Erro de biblioteca do sistema: {str(e)}")
-    st.stop()
-
-# Configurações iniciais
+# Configuração da página deve ser o primeiro comando Streamlit
 st.set_page_config(
-    page_title="DocTR OCR Completo",
+    page_title="Extrator de Texto de PDFs",
     page_icon="📄",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(_name_)
+import numpy as np
+import io
+import os
+import tempfile
+from PIL import Image
 
-# Inicialização do estado da sessão
-if 'processed_text' not in st.session_state:
-    st.session_state.processed_text = ""
-if 'config' not in st.session_state:
-    st.session_state.config = {
-        "model_type": "accurate",
-        "det_thresh": 0.5,
-        "rec_thresh": 0.3
-    }
+# Configuração do ambiente para usar PyTorch
+os.environ["USE_TORCH"] = "1"
 
+# Carregamento de bibliotecas com tratamento de erros
+try:
+    import fitz  # PyMuPDF
+    from doctr.models import ocr_predictor
+except Exception as e:
+    st.error(f"Erro ao carregar bibliotecas: {e}")
+    st.info("Certifique-se de instalar PyMuPDF: `pip install pymupdf`")
+    st.stop()
+
+st.title("Extrator de Texto de Imagens em PDFs")
+st.markdown("Esta aplicação extrai texto de imagens contidas em arquivos PDF usando docTR.")
+
+# Função para carregar o modelo
 @st.cache_resource
-def load_doctr_model(model_type):
-    """Carrega o modelo DocTR com cache"""
-    logger.info(f"Carregando modelo {model_type}...")
-    return ocr_predictor(
-        det_arch='db_resnet50' if model_type == "accurate" else 'db_mobilenet_v3_large',
-        reco_arch='crnn_vgg16_bn' if model_type == "accurate" else 'crnn_mobilenet_v3_small',
-        pretrained=True
-    )
-
-def process_file(uploaded_file):
-    """Processa o arquivo carregado"""
+def load_model():
     try:
-        file_bytes = uploaded_file.read()
-        
-        if uploaded_file.type == "application/pdf":
-            images = convert_from_bytes(
-                file_bytes,
-                dpi=300,
-                poppler_path="/usr/bin"
-            )
-            images = [np.array(img) for img in images]
-        else:
-            image = Image.open(io.BytesIO(file_bytes))
-            images = [np.array(image)]
-            
-        return images
-    
+        return ocr_predictor(pretrained=True)
     except Exception as e:
-        logger.error(f"Erro no processamento do arquivo: {str(e)}")
-        raise
+        st.error(f"Erro ao carregar o modelo: {e}")
+        return None
 
-def main():
-    st.title("📄 OCR Profissional com DocTR")
-    st.markdown("Sistema completo para extração de texto de documentos")
-
-    # Sidebar com configurações
-    with st.sidebar.expander("⚙ Configurações Avançadas", expanded=True):
-        st.session_state.config["model_type"] = st.selectbox(
-            "Tipo de Modelo",
-            ["accurate", "fast"],
-            index=0,
-            help="Modelo preciso (mais lento) ou rápido (menos preciso)"
-        )
+# Função para extrair imagens de um PDF
+def extract_images_from_pdf(pdf_file):
+    images = []
+    # Salvar o PDF em um arquivo temporário
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_file.write(pdf_file.getvalue())
+        pdf_path = tmp_file.name
+    
+    try:
+        # Abrir o PDF usando PyMuPDF
+        doc = fitz.open(pdf_path)
         
-        st.session_state.config["det_thresh"] = st.slider(
-            "Limiar de Detecção",
-            0.1, 1.0, 0.5, 0.05,
-            help="Confiança mínima para detecção de áreas de texto"
-        )
-        
-        st.session_state.config["rec_thresh"] = st.slider(
-            "Limiar de Reconhecimento",
-            0.1, 1.0, 0.3, 0.05,
-            help="Confiança mínima para reconhecimento de caracteres"
-        )
-
-    # Upload de arquivo
-    uploaded_file = st.file_uploader(
-        "Carregue seu documento (PDF ou imagem)",
-        type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp"],
-        accept_multiple_files=False
-    )
-
-    if uploaded_file is not None:
-        if st.button("Processar Documento", type="primary"):
-            try:
-                with st.spinner('Processando...'):
-                    # Carregar modelo
-                    predictor = load_doctr_model(st.session_state.config["model_type"])
-                    
-                    # Processar arquivo
-                    images = process_file(uploaded_file)
-                    
-                    # Extrair texto
-                    full_text = []
-                    for img in images:
-                        result = predictor([img])
-                        page_text = "\n".join([
-                            " ".join([word.value for word in line.words])
-                            for block in result.pages[0].blocks
-                            for line in block.lines
-                        ])
-                        full_text.append(page_text)
-                    
-                    st.session_state.processed_text = "\n\n".join(full_text)
+        # Para cada página do PDF
+        for page_index, page in enumerate(doc):
+            # Obter as imagens da página
+            image_list = page.get_images(full=True)
+            
+            # Se não houver imagens na página
+            if not image_list:
+                st.info(f"Nenhuma imagem encontrada na página {page_index+1}")
+                continue
                 
-                st.success("Processamento concluído com sucesso!")
-
-            except Exception as e:
-                st.error(f"Erro: {str(e)}")
-                logger.error(traceback.format_exc())
-
-    # Exibir resultados
-    if st.session_state.processed_text:
-        st.subheader("Resultado da Extração")
-        st.text_area("Texto Extraído", st.session_state.processed_text, height=500)
+            for img_index, img in enumerate(image_list):
+                # Obter o número da imagem
+                xref = img[0]
+                # Extrair a imagem
+                base_image = doc.extract_image(xref)
+                image_bytes = base_image["image"]
+                
+                # Converter para formato PIL
+                try:
+                    image = Image.open(io.BytesIO(image_bytes))
+                    # Converter para RGB se necessário
+                    if image.mode != "RGB":
+                        image = image.convert("RGB")
+                    images.append({
+                        "page": page_index + 1,
+                        "index": img_index + 1,
+                        "image": image
+                    })
+                except Exception as e:
+                    st.warning(f"Erro ao processar imagem {img_index+1} da página {page_index+1}: {e}")
         
-        st.download_button(
-            label="📥 Baixar Resultado",
-            data=st.session_state.processed_text,
-            file_name="texto_extraido.txt",
-            mime="text/plain"
-        )
+        # Fechar o documento
+        doc.close()
+    except Exception as e:
+        st.error(f"Erro ao extrair imagens do PDF: {e}")
+    finally:
+        # Remover o arquivo temporário
+        os.unlink(pdf_path)
+    
+    return images
 
-if __name__ == "__main__":
-    main()
+# Upload de arquivo
+st.header("Upload de PDF")
+uploaded_file = st.file_uploader("Escolha um arquivo PDF", type=["pdf"])
+
+if uploaded_file is not None:
+    # Extrair imagens do PDF
+    with st.spinner("Extraindo imagens do PDF..."):
+        images = extract_images_from_pdf(uploaded_file)
+        
+        if not images:
+            st.warning("Não foram encontradas imagens no PDF.")
+            st.stop()
+        else:
+            st.success(f"Foram encontradas {len(images)} imagens no PDF.")
+    
+    # Carregar o modelo
+    with st.spinner("Carregando modelo OCR..."):
+        model = load_model()
+        if model is None:
+            st.error("Não foi possível carregar o modelo OCR.")
+            st.stop()
+    
+    # Processar cada imagem
+    for img_data in images:
+        st.markdown(f"## Imagem {img_data['index']} (Página {img_data['page']})")
+        
+        # Exibir a imagem e processar OCR
+        cols = st.columns(2)
+        with cols[0]:
+            st.image(img_data["image"], caption=f"Imagem {img_data['index']} da página {img_data['page']}", use_column_width=True)
+        
+        # Processar OCR
+        with st.spinner(f"Processando OCR na imagem {img_data['index']}..."):
+            try:
+                # Converter para numpy array
+                img_np = np.array(img_data["image"])
+                
+                # Executar OCR
+                result = model([img_np])
+                
+                # Extrair texto
+                page_text = ""
+                for page in result.pages:
+                    for block in page.blocks:
+                        for line in block.lines:
+                            line_text = ""
+                            for word in line.words:
+                                line_text += word.value + " "
+                            page_text += line_text.strip() + "\n"
+                        page_text += "\n"
+                
+                # Exibir resultado
+                with cols[1]:
+                    st.text_area(f"Texto extraído", page_text, height=250)
+                
+                # Visualização com anotações
+                try:
+                    synthetic_pages = result.synthesize()
+                    st.image(synthetic_pages[0], caption="Visualização com detecções", use_column_width=True)
+                except Exception as e:
+                    st.warning(f"Não foi possível gerar a visualização: {e}")
+            
+            except Exception as e:
+                st.error(f"Erro ao processar OCR na imagem: {e}")
+        
+        # Separador entre imagens
+        st.markdown("---")
