@@ -5,6 +5,7 @@ from PIL import Image
 import io
 import os
 import tempfile
+import sys
 
 # Configuração do ambiente para usar PyTorch (padrão) ou TensorFlow
 import os
@@ -16,8 +17,24 @@ else:
     os.environ["USE_TORCH"] = "1"
 
 # Importar docTR após configurar o ambiente
-from doctr.io import DocumentFile
-from doctr.models import ocr_predictor
+try:
+    from doctr.io import DocumentFile
+    from doctr.models import ocr_predictor
+except OSError as e:
+    st.error(f"""
+    Erro ao carregar bibliotecas do sistema: {e}
+    
+    Se estiver no Streamlit Cloud, verifique se você adicionou um arquivo `packages.txt` com as dependências necessárias:
+    ```
+    libpango-1.0-0
+    libpangocairo-1.0-0
+    libpangoft2-1.0-0
+    libharfbuzz0b
+    libfribidi0
+    librsvg2-2
+    ```
+    """)
+    st.stop()
 
 # Configuração da página
 st.set_page_config(
