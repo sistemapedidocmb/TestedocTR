@@ -7,3 +7,4 @@ librsvg2-2
 libgl1-mesa-glx
 libopengl0
 libglib2.0-0
+poppler-utils
