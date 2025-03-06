@@ -1,0 +1,4 @@
+streamlit>=1.22.0
+python-doctr>=0.6.0
+Pillow>=9.0.0
+numpy>=1.20.0
