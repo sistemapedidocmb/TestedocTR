@@ -1,139 +1,151 @@
-import streamlit as st
-
-# Configuração da página deve ser o primeiro comando Streamlit
-st.set_page_config(
-    page_title="Extrator de Texto com docTR",
-    page_icon="📄",
-    layout="wide"
-)
-
-# Importações após o set_page_config
-import numpy as np
-import io
 import os
-import tempfile
-import sys
+import streamlit as st
+import numpy as np
 from PIL import Image
+from doctr.io import DocumentFile
+from doctr.models import ocr_predictor
+import logging
+from pdf2image import convert_from_bytes
+import io
+import traceback
 
-# Título e descrição
-st.title("Extrator de Texto de Imagens com docTR")
-st.markdown("Esta aplicação extrai texto de imagens usando a biblioteca docTR.")
-
-# Configuração do ambiente para usar PyTorch
-os.environ["USE_TORCH"] = "1"
-
-# Carregar docTR com tratamento de erros
+# Verificação inicial de dependências
 try:
-    from doctr.io import DocumentFile
-    from doctr.models import ocr_predictor
-except Exception as e:
-    st.error(f"""
-    Erro ao carregar docTR: {e}
-    
-    Verifique se você tem o arquivo `packages.txt` com:
-    ```
-    libpango-1.0-0
-    libpangocairo-1.0-0
-    libpangoft2-1.0-0
-    libharfbuzz0b
-    libfribidi0
-    librsvg2-2
-    ```
-    """)
+    from weasyprint import HTML
+    import cairocffi
+except ImportError as e:
+    st.error(f"Erro de dependência: {str(e)}")
+    st.stop()
+except OSError as e:
+    st.error(f"Erro de biblioteca do sistema: {str(e)}")
     st.stop()
 
-# Configurações do modelo no sidebar
-st.sidebar.header("Configurações do Modelo")
-det_arch = st.sidebar.selectbox(
-    "Arquitetura de Detecção",
-    ["db_resnet50", "db_mobilenet_v3_large"],
-    index=0
+# Configurações iniciais
+st.set_page_config(
+    page_title="DocTR OCR Completo",
+    page_icon="📄",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-reco_arch = st.sidebar.selectbox(
-    "Arquitetura de Reconhecimento",
-    ["crnn_vgg16_bn", "crnn_mobilenet_v3_small"],
-    index=0
-)
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(_name_)
 
-# Função para carregar o modelo
+# Inicialização do estado da sessão
+if 'processed_text' not in st.session_state:
+    st.session_state.processed_text = ""
+if 'config' not in st.session_state:
+    st.session_state.config = {
+        "model_type": "accurate",
+        "det_thresh": 0.5,
+        "rec_thresh": 0.3
+    }
+
 @st.cache_resource
-def load_model(det_arch, reco_arch):
+def load_doctr_model(model_type):
+    """Carrega o modelo DocTR com cache"""
+    logger.info(f"Carregando modelo {model_type}...")
+    return ocr_predictor(
+        det_arch='db_resnet50' if model_type == "accurate" else 'db_mobilenet_v3_large',
+        reco_arch='crnn_vgg16_bn' if model_type == "accurate" else 'crnn_mobilenet_v3_small',
+        pretrained=True
+    )
+
+def process_file(uploaded_file):
+    """Processa o arquivo carregado"""
     try:
-        return ocr_predictor(
-            det_arch=det_arch,
-            reco_arch=reco_arch,
-            pretrained=True
-        )
-    except Exception as e:
-        st.error(f"Erro ao carregar o modelo: {e}")
-        return None
-
-# Upload de arquivo
-st.header("Upload de Imagem")
-uploaded_file = st.file_uploader("Escolha uma imagem", type=["jpg", "jpeg", "png"])
-
-# Carregar o modelo apenas quando necessário
-if uploaded_file is not None:
-    with st.spinner("Carregando modelo..."):
-        model = load_model(det_arch, reco_arch)
+        file_bytes = uploaded_file.read()
         
-        if model is None:
-            st.error("Não foi possível carregar o modelo. Verifique os logs para mais detalhes.")
-            st.stop()
+        if uploaded_file.type == "application/pdf":
+            images = convert_from_bytes(
+                file_bytes,
+                dpi=300,
+                poppler_path="/usr/bin"
+            )
+            images = [np.array(img) for img in images]
+        else:
+            image = Image.open(io.BytesIO(file_bytes))
+            images = [np.array(image)]
+            
+        return images
     
-    # Processar a imagem
-    with st.spinner("Processando imagem..."):
-        try:
-            # Ler a imagem
-            image_bytes = uploaded_file.getvalue()
-            image = Image.open(io.BytesIO(image_bytes))
-            
-            # Converter para RGB se necessário
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            
-            # Converter para numpy array
-            img_np = np.array(image)
-            
-            # Processar com docTR
-            result = model([img_np])
-            
-            # Mostrar resultados
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.header("Imagem Original")
-                st.image(image, use_column_width=True)
-            
-            with col2:
-                st.header("Texto Extraído")
-                # Extrair texto de cada página
-                for page_idx, page in enumerate(result.pages):
-                    page_text = ""
-                    for block in page.blocks:
-                        for line in block.lines:
-                            for word in line.words:
-                                page_text += word.value + " "
-                            page_text += "\n"
-                        page_text += "\n"
-                    
-                    # Mostrar texto extraído
-                    st.text_area("Texto extraído", page_text, height=300)
-            
-            # Mostrar visualização (se disponível)
+    except Exception as e:
+        logger.error(f"Erro no processamento do arquivo: {str(e)}")
+        raise
+
+def main():
+    st.title("📄 OCR Profissional com DocTR")
+    st.markdown("Sistema completo para extração de texto de documentos")
+
+    # Sidebar com configurações
+    with st.sidebar.expander("⚙ Configurações Avançadas", expanded=True):
+        st.session_state.config["model_type"] = st.selectbox(
+            "Tipo de Modelo",
+            ["accurate", "fast"],
+            index=0,
+            help="Modelo preciso (mais lento) ou rápido (menos preciso)"
+        )
+        
+        st.session_state.config["det_thresh"] = st.slider(
+            "Limiar de Detecção",
+            0.1, 1.0, 0.5, 0.05,
+            help="Confiança mínima para detecção de áreas de texto"
+        )
+        
+        st.session_state.config["rec_thresh"] = st.slider(
+            "Limiar de Reconhecimento",
+            0.1, 1.0, 0.3, 0.05,
+            help="Confiança mínima para reconhecimento de caracteres"
+        )
+
+    # Upload de arquivo
+    uploaded_file = st.file_uploader(
+        "Carregue seu documento (PDF ou imagem)",
+        type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp"],
+        accept_multiple_files=False
+    )
+
+    if uploaded_file is not None:
+        if st.button("Processar Documento", type="primary"):
             try:
-                st.header("Visualização com Detecções")
-                synthetic_pages = result.synthesize()
-                st.image(synthetic_pages[0], use_column_width=True)
-            except Exception as e:
-                st.warning(f"Não foi possível gerar visualização: {e}")
-            
-            # Mostrar JSON estruturado
-            st.header("Dados Estruturados")
-            with st.expander("Ver JSON"):
-                st.json(result.export())
+                with st.spinner('Processando...'):
+                    # Carregar modelo
+                    predictor = load_doctr_model(st.session_state.config["model_type"])
+                    
+                    # Processar arquivo
+                    images = process_file(uploaded_file)
+                    
+                    # Extrair texto
+                    full_text = []
+                    for img in images:
+                        result = predictor([img])
+                        page_text = "\n".join([
+                            " ".join([word.value for word in line.words])
+                            for block in result.pages[0].blocks
+                            for line in block.lines
+                        ])
+                        full_text.append(page_text)
+                    
+                    st.session_state.processed_text = "\n\n".join(full_text)
                 
-        except Exception as e:
-            st.error(f"Erro ao processar imagem: {e}")
-            st.error("Detalhes técnicos:", exception=e)
+                st.success("Processamento concluído com sucesso!")
+
+            except Exception as e:
+                st.error(f"Erro: {str(e)}")
+                logger.error(traceback.format_exc())
+
+    # Exibir resultados
+    if st.session_state.processed_text:
+        st.subheader("Resultado da Extração")
+        st.text_area("Texto Extraído", st.session_state.processed_text, height=500)
+        
+        st.download_button(
+            label="📥 Baixar Resultado",
+            data=st.session_state.processed_text,
+            file_name="texto_extraido.txt",
+            mime="text/plain"
+        )
+
+if __name__ == "__main__":
+    main()
