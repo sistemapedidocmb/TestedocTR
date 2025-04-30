@@ -11,7 +11,6 @@ import numpy as np
 import io
 import os
 import tempfile
-from PIL import Image
 
 # Configuração do ambiente para usar PyTorch
 os.environ["USE_TORCH"] = "1"
@@ -68,8 +67,11 @@ def convert_pdf_to_images(pdf_file):
         return []
 
 # Upload de arquivo
-st.header("Upload de PDF")
+st.header("Extração de Texto de PDF")
 uploaded_file = st.file_uploader("Escolha um arquivo PDF", type=["pdf"])
+
+# Variável para armazenar todo o texto extraído
+full_text = ""
 
 if uploaded_file is not None:
     # Converter PDF para imagens
@@ -91,13 +93,6 @@ if uploaded_file is not None:
     
     # Processar cada página do PDF
     for page_num, img in enumerate(images):
-        st.markdown(f"## Página {page_num + 1}")
-        
-        # Exibir a imagem e processar OCR
-        cols = st.columns(2)
-        with cols[0]:
-            st.image(img, caption=f"Página {page_num + 1}", use_column_width=True)
-        
         # Processar OCR
         with st.spinner(f"Processando OCR na página {page_num + 1}..."):
             try:
@@ -118,19 +113,17 @@ if uploaded_file is not None:
                             page_text += line_text.strip() + "\n"
                         page_text += "\n"
                 
-                # Exibir resultado
-                with cols[1]:
-                    st.text_area(f"Texto extraído", page_text, height=250)
-                
-                # Visualização com anotações
-                try:
-                    synthetic_pages = result.synthesize()
-                    st.image(synthetic_pages[0], caption="Visualização com detecções", use_column_width=True)
-                except Exception as e:
-                    st.warning(f"Não foi possível gerar a visualização: {e}")
-            
-            except Exception as e:
-                st.error(f"Erro ao processar OCR na página: {e}")
+                # Adicionar texto da página ao texto completo
+                full_text += f"--- Página {page_num + 1} ---\n{page_text}\n\n"
         
-        # Separador entre páginas
-        st.markdown("---")
+    # Exibir texto completo extraído
+    st.header("Texto Extraído")
+    st.text_area("Conteúdo do PDF", full_text, height=400)
+
+    # Botão para copiar texto
+    st.download_button(
+        label="Baixar texto extraído",
+        data=full_text,
+        file_name="texto_extraido.txt",
+        mime="text/plain"
+    )
